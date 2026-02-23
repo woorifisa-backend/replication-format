@@ -124,6 +124,209 @@ SBR은 SQL 문을 그대로 기록하고 Replica에서 다시 실행하는 방�
 ---
 
 
+## 2️⃣ 로그 파일 비교
+
+
+### 📌 실험 목적
+
+MySQL의 Binlog Format에 따른 로그 크기 차이를 비교하기 위해  
+SBR(Statement-Based Replication)과 RBR(Row-Based Replication) 모드에서  
+동일한 대량 UPDATE 작업을 수행하고 로그 파일 크기를 비교하였다.
+
+---
+
+### 🧪 실험 환경
+
+- MySQL 8.x
+- Binlog 활성화 상태
+- 동일한 테이블 및 동일한 UPDATE 조건
+
+---
+
+### 1️⃣ SBR (Statement-Based Replication) 실험
+
+### ① Binlog Format 변경
+
+```sql
+SET GLOBAL binlog_format = 'STATEMENT';
+```
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/a56edcc1-a53e-4e27-b102-b78f2b339738" />
+
+---
+
+### ② 테스트 테이블 생성
+
+```sql
+DROP TABLE IF EXISTS big_table;
+
+CREATE TABLE big_table (
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    value INT
+);
+```
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/be8a32e0-b97f-406c-ac80-3d531d038484" />
+
+---
+
+### ③ 3647개 더미 데이터 생성
+
+```sql
+INSERT INTO big_table(value)
+SELECT 1 FROM information_schema.columns LIMIT 10000;
+```
+
+→ 실제 삽입 행 수: **3647 rows**
+
+---
+
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/efd107a9-ee94-4762-9b8c-af64c7aded38" />
+
+
+### ④ 로그 구간 분리
+
+```sql
+FLUSH LOGS;
+```
+
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/40c3184d-cc37-4265-9dd8-8bdb5e69dc19" />
+
+
+→ 새로운 binlog 파일 생성  
+→ 이후 실행되는 쿼리만 해당 파일에 기록됨
+
+---
+
+### ⑤ 대량 UPDATE 실행
+
+```sql
+UPDATE big_table SET value = value + 1;
+```
+
+---
+
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/c49f46dc-ee79-4e6d-87fd-6d30d2c7dbff" />
+
+
+### ⑥ Binlog 파일 크기
+
+- 약 **1.3 KB**
+
+---
+
+### 📖 SBR 기록 방식
+
+- 실행된 **SQL 문 자체를 그대로 기록**
+- 예:
+
+```sql
+UPDATE big_table SET value = value + 1;
+```
+
+대량 변경이어도 SQL 한 줄만 기록되므로 로그 크기가 작다.
+
+---
+
+### 2️⃣ RBR (Row-Based Replication) 실험
+
+### ① Binlog Format 변경
+
+```sql
+SET GLOBAL binlog_format = 'ROW';
+```
+
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/5d3f7caa-720a-4605-96f8-79f646b87a08" />
+
+---
+
+### ② 로그 구간 분리
+
+```sql
+FLUSH LOGS;
+```
+
+---
+
+### ③ 동일한 대량 UPDATE 실행
+
+```sql
+UPDATE big_table SET value = value + 1;
+```
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/de412e1f-c517-4ebf-b89e-bfdd5843d82a" />
+
+---
+
+### ④ Binlog 파일 크기
+
+- 약 **65 KB**
+
+---
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/feaf7d44-b89c-453e-b664-cd4ef3cfa694" />
+
+### 📖 RBR 기록 방식
+
+- 변경된 **각 row의 실제 데이터 값**을 기록
+- 3647개 행 각각에 대한 변경 내용이 저장됨
+
+즉, 변경된 데이터 수만큼 로그가 증가한다.
+
+---
+
+### 3️⃣ Binlog 파일 확인
+
+```sql
+SHOW MASTER STATUS;
+```
+
+예시 파일:
+
+- SBR → `mysql-bin.000004`
+- RBR → `mysql-bin.000006`
+
+파일을 복사하여 내용을 직접 비교하였다.
+<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/cafb2286-160d-4f3a-b4a0-edc17ad022c1" />
+
+---
+<img width="602" height="642" alt="image" src="https://github.com/user-attachments/assets/020f5ea9-44f7-417f-84f5-65e487373a27" />
+
+SBR(004파일)
+
+<img width="597" height="646" alt="image" src="https://github.com/user-attachments/assets/e52acd6c-226d-45e2-9f1b-4aa0c81da614" />
+
+
+RBR(006파일)
+
+
+### 📊 SBR vs RBR 비교
+
+| 구분 | SBR | RBR |
+|------|------|------|
+| 기록 방식 | SQL 문 자체 기록 | 변경된 Row 데이터 기록 |
+| 로그 크기 | 약 1.3KB | 약 65KB |
+| 대량 UPDATE 영향 | 거의 없음 | 변경된 행 수만큼 증가 |
+| 장점 | 로그 크기 작음 | 데이터 정합성 높음 |
+| 단점 | 비결정적 쿼리 문제 가능 | 로그 크기 증가 |
+
+---
+
+# 🔥 결론
+
+- **SBR은 실행된 SQL을 기록**
+- **RBR은 변경된 데이터 자체를 기록**
+
+따라서,
+
+> SBR은 SQL 한 줄만 기록되지만,  
+> RBR은 변경된 모든 row 데이터를 기록하므로  
+> 대량 변경 작업에서는 RBR이 훨씬 많은 로그를 생성한다.
+
+이 실험을 통해 Binlog Format에 따른 로그 증가 차이를 직접 확인하였다.
+
+
+
+
+
+---
+
 ## 3️⃣ 실행 시간 비교
 
 ### 1. 테스트 환경 및 조건
@@ -174,200 +377,4 @@ SBR은 SQL 문을 그대로 기록하고 Replica에서 다시 실행하는 방�
 
 
 ---
-<br><br><br>
 
-# MySQL Binlog Format 비교 실험 (SBR vs RBR)
-
-## 📌 실험 목적
-
-MySQL의 Binlog Format에 따른 로그 크기 차이를 비교하기 위해  
-SBR(Statement-Based Replication)과 RBR(Row-Based Replication) 모드에서  
-동일한 대량 UPDATE 작업을 수행하고 로그 파일 크기를 비교하였다.
-
----
-
-## 🧪 실험 환경
-
-- MySQL 8.x
-- Binlog 활성화 상태
-- 동일한 테이블 및 동일한 UPDATE 조건
-
----
-
-# 1️⃣ SBR (Statement-Based Replication) 실험
-
-## ① Binlog Format 변경
-
-```sql
-SET GLOBAL binlog_format = 'STATEMENT';
-```
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/a56edcc1-a53e-4e27-b102-b78f2b339738" />
-
----
-
-## ② 테스트 테이블 생성
-
-```sql
-DROP TABLE IF EXISTS big_table;
-
-CREATE TABLE big_table (
-    id INT PRIMARY KEY AUTO_INCREMENT,
-    value INT
-);
-```
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/be8a32e0-b97f-406c-ac80-3d531d038484" />
-
----
-
-## ③ 3647개 더미 데이터 생성
-
-```sql
-INSERT INTO big_table(value)
-SELECT 1 FROM information_schema.columns LIMIT 10000;
-```
-
-→ 실제 삽입 행 수: **3647 rows**
-
----
-
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/efd107a9-ee94-4762-9b8c-af64c7aded38" />
-
-
-## ④ 로그 구간 분리
-
-```sql
-FLUSH LOGS;
-```
-
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/40c3184d-cc37-4265-9dd8-8bdb5e69dc19" />
-
-
-→ 새로운 binlog 파일 생성  
-→ 이후 실행되는 쿼리만 해당 파일에 기록됨
-
----
-
-## ⑤ 대량 UPDATE 실행
-
-```sql
-UPDATE big_table SET value = value + 1;
-```
-
----
-
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/c49f46dc-ee79-4e6d-87fd-6d30d2c7dbff" />
-
-
-## ⑥ Binlog 파일 크기
-
-- 약 **1.3 KB**
-
----
-
-## 📖 SBR 기록 방식
-
-- 실행된 **SQL 문 자체를 그대로 기록**
-- 예:
-
-```sql
-UPDATE big_table SET value = value + 1;
-```
-
-대량 변경이어도 SQL 한 줄만 기록되므로 로그 크기가 작다.
-
----
-
-# 2️⃣ RBR (Row-Based Replication) 실험
-
-## ① Binlog Format 변경
-
-```sql
-SET GLOBAL binlog_format = 'ROW';
-```
-
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/5d3f7caa-720a-4605-96f8-79f646b87a08" />
-
----
-
-## ② 로그 구간 분리
-
-```sql
-FLUSH LOGS;
-```
-
----
-
-## ③ 동일한 대량 UPDATE 실행
-
-```sql
-UPDATE big_table SET value = value + 1;
-```
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/de412e1f-c517-4ebf-b89e-bfdd5843d82a" />
-
----
-
-## ④ Binlog 파일 크기
-
-- 약 **65 KB**
-
----
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/feaf7d44-b89c-453e-b664-cd4ef3cfa694" />
-
-## 📖 RBR 기록 방식
-
-- 변경된 **각 row의 실제 데이터 값**을 기록
-- 3647개 행 각각에 대한 변경 내용이 저장됨
-
-즉, 변경된 데이터 수만큼 로그가 증가한다.
-
----
-
-# 3️⃣ Binlog 파일 확인
-
-```sql
-SHOW MASTER STATUS;
-```
-
-예시 파일:
-
-- SBR → `mysql-bin.000004`
-- RBR → `mysql-bin.000006`
-
-파일을 복사하여 내용을 직접 비교하였다.
-<img width="302" height="220" alt="image" src="https://github.com/user-attachments/assets/cafb2286-160d-4f3a-b4a0-edc17ad022c1" />
-
----
-<img width="602" height="642" alt="image" src="https://github.com/user-attachments/assets/020f5ea9-44f7-417f-84f5-65e487373a27" />
-
-SBR(004파일)
-
-<img width="597" height="646" alt="image" src="https://github.com/user-attachments/assets/e52acd6c-226d-45e2-9f1b-4aa0c81da614" />
-
-
-RBR(006파일)
-
-
-# 📊 SBR vs RBR 비교
-
-| 구분 | SBR | RBR |
-|------|------|------|
-| 기록 방식 | SQL 문 자체 기록 | 변경된 Row 데이터 기록 |
-| 로그 크기 | 약 1.3KB | 약 65KB |
-| 대량 UPDATE 영향 | 거의 없음 | 변경된 행 수만큼 증가 |
-| 장점 | 로그 크기 작음 | 데이터 정합성 높음 |
-| 단점 | 비결정적 쿼리 문제 가능 | 로그 크기 증가 |
-
----
-
-# 🔥 결론
-
-- **SBR은 실행된 SQL을 기록**
-- **RBR은 변경된 데이터 자체를 기록**
-
-따라서,
-
-> SBR은 SQL 한 줄만 기록되지만,  
-> RBR은 변경된 모든 row 데이터를 기록하므로  
-> 대량 변경 작업에서는 RBR이 훨씬 많은 로그를 생성한다.
-
-이 실험을 통해 Binlog Format에 따른 로그 증가 차이를 직접 확인하였다.
